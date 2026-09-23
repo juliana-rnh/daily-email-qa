@@ -2,7 +2,7 @@ name: Daily Email QA
 
 on:
   schedule:
-    - cron: '0 13 * * 1-5'
+    - cron: '45 12 * * 1-5'
       timezone: 'America/Sao_Paulo'
   workflow_dispatch:
 
