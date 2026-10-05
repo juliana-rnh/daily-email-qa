@@ -2,8 +2,8 @@ name: Daily Email QA
 
 on:
   schedule:
-    - cron: '45 15 * * 1-5'
-      timezone: 'UTC'
+    - cron: '0 10 * * 1-5'
+      timezone: 'America/Sao_Paulo'
   workflow_dispatch:
 
 permissions:
