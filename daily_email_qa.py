@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Cria o rascunho diário da equipe Testes e Qualidade no Gmail.
+Envia o e-mail diário da equipe Testes e Qualidade no Gmail.
 
 Regras principais:
 - Usa a data atual em America/Sao_Paulo.
@@ -8,9 +8,9 @@ Regras principais:
   @Testes e Qualidade - Avaliação Diária <Mês>/<Ano>
 - Descobre as abas dinamicamente e ignora apenas "capa" e "Resumo".
 - Lê somente Data e Objetivo do dia para a data atual.
-- Se encontrar "SEM EXPEDIENTE", encerra sem criar rascunho.
-- Evita rascunhos duplicados pelo assunto exato.
-- Cria somente rascunho HTML. Nunca envia o e-mail.
+- Se encontrar "SEM EXPEDIENTE", encerra sem enviar o e-mail.
+- Evita envios duplicados pelo assunto exato.
+- Envia o e-mail diretamente pelo Gmail API.
 
 Autenticação no GitHub Actions:
 - Crie um Secret chamado GOOGLE_TOKEN_JSON contendo o JSON OAuth de usuário.
@@ -54,7 +54,7 @@ AUXILIARY_TABS = {"capa", "resumo"}
 SCOPES = [
     "https://www.googleapis.com/auth/drive.metadata.readonly",
     "https://www.googleapis.com/auth/spreadsheets.readonly",
-    "https://www.googleapis.com/auth/gmail.compose",
+    "https://www.googleapis.com/auth/gmail.send",
 ]
 
 MONTHS_PT = {
@@ -230,12 +230,12 @@ def find_diary(drive: Any, expected_title: str) -> dict[str, Any]:
     matches = [f for f in response.get("files", []) if f.get("name") == expected_title]
     if not matches:
         raise WorkflowError(
-            f'Diário do mês atual não encontrado: "{expected_title}". Nenhum rascunho criado.'
+            f'Diário do mês atual não encontrado: "{expected_title}". Nenhum e-mail enviado.'
         )
     if len(matches) > 1:
         raise WorkflowError(
             f'Foram encontrados {len(matches)} arquivos com o título exato "{expected_title}". '
-            "Diário ambíguo; nenhum rascunho criado."
+            "Diário ambíguo; nenhum e-mail enviado."
         )
     return matches[0]
 
@@ -434,39 +434,40 @@ def header_value(headers: list[dict[str, Any]], name: str) -> str:
     return ""
 
 
-def find_existing_draft(gmail: Any, subject: str) -> str | None:
+def find_existing_sent_message(gmail: Any, subject: str) -> str | None:
     page_token: str | None = None
     while True:
         kwargs: dict[str, Any] = {
             "userId": "me",
-            "q": f'subject:"{subject}"',
+            "q": f'in:sent subject:"{subject}"',
             "maxResults": 500,
         }
         if page_token:
             kwargs["pageToken"] = page_token
 
         response = google_execute(
-            gmail.users().drafts().list(**kwargs),
+            gmail.users().messages().list(**kwargs),
             "Gmail",
-            "verificar rascunho duplicado",
+            "verificar e-mail duplicado enviado",
         )
 
-        for draft in response.get("drafts", []):
-            draft_id = draft.get("id")
-            if not draft_id:
+        for message in response.get("messages", []):
+            message_id = message.get("id")
+            if not message_id:
                 continue
             details = google_execute(
-                gmail.users().drafts().get(
+                gmail.users().messages().get(
                     userId="me",
-                    id=draft_id,
+                    id=message_id,
                     format="metadata",
+                    metadataHeaders=["Subject"],
                 ),
                 "Gmail",
-                "ler assunto de rascunho existente",
+                "ler assunto de e-mail enviado existente",
             )
-            headers = details.get("message", {}).get("payload", {}).get("headers", [])
+            headers = details.get("payload", {}).get("headers", [])
             if header_value(headers, "Subject") == subject:
-                return str(draft_id)
+                return str(message_id)
 
         page_token = response.get("nextPageToken")
         if not page_token:
@@ -497,15 +498,15 @@ def build_email(persons: list[PersonGoals], subject: str) -> EmailMessage:
     return message
 
 
-def create_draft(gmail: Any, message: EmailMessage) -> dict[str, Any]:
+def send_email(gmail: Any, message: EmailMessage) -> dict[str, Any]:
     raw = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
     return google_execute(
-        gmail.users().drafts().create(
+        gmail.users().messages().send(
             userId="me",
-            body={"message": {"raw": raw}},
+            body={"raw": raw},
         ),
         "Gmail",
-        "criar rascunho",
+        "enviar e-mail",
     )
 
 
@@ -531,25 +532,24 @@ def run() -> int:
     except StopIteration as stop:
         person = str(stop.value or "")
         suffix = f' na aba "{person}"' if person else ""
-        log(f"SEM EXPEDIENTE encontrado{suffix}. Nenhum rascunho criado.")
+        log(f"SEM EXPEDIENTE encontrado{suffix}. Nenhum e-mail enviado.")
         return 0
 
-    existing = find_existing_draft(gmail, subject)
+    existing = find_existing_sent_message(gmail, subject)
     if existing:
-        log(f'Rascunho já existente: "{subject}". Nenhum duplicado criado.')
+        log(f'E-mail já enviado: "{subject}". Nenhum envio duplicado realizado.')
         return 0
 
     message = build_email(persons, subject)
-    created = create_draft(gmail, message)
-    draft_id = created.get("id", "desconhecido")
-    log(f'Rascunho criado: "{subject}".')
-    log(f"Draft ID: {draft_id}")
-    log("E-mail NÃO enviado.")
+    sent = send_email(gmail, message)
+    message_id = sent.get("id", "desconhecido")
+    log(f'E-mail enviado: "{subject}".')
+    log(f"Message ID: {message_id}")
     return 0
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Cria o rascunho diário da equipe Testes e Qualidade.")
+    parser = argparse.ArgumentParser(description="Envia o e-mail diário da equipe Testes e Qualidade.")
     parser.add_argument(
         "--authorize",
         metavar="CLIENT_SECRET_JSON",
